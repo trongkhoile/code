@@ -106,7 +106,9 @@ plot(show_senti ? V_senti : na, "Sentiment", style=plot.style_columns,
  color = s_up ? (sflag_up ? c_grow_above : c_fall_above) : 
  sflag_up ? c_grow_below : c_fall_below) 
 // =============================================================================
-
+scale_factor = 1.2
+adp := adp * scale_factor
+asp := asp * scale_factor
 s = plot(asp, 'Supply Energy', c_asp, 2, style=plot.style_circles,  join=true)
 d = plot(adp, 'Demand Energy', c_adp, 2, style=plot.style_cross,    join=true)
 fill(d, s, adp > asp ? c_fd : c_fs)
@@ -154,11 +156,18 @@ input_stepSize      = input.int(20, 'Step Size [0 = No Step]', minval=0, step=5)
 input_sigLevel      = input(20, 'Significant Trend Level')
 input_volWeighted   = input.bool(false, 'Use Volume Weighting?')
 
+//=== Shift option ===
+input_shift         = input.int(5, "Shift DXF Value", minval=0, maxval=100)
+
 //=== Calculations ===
 volFactor       = input_volWeighted ? volume : 1
 rawDXF          = f_calcADXF(input_price, input_dxfLen, volFactor, input_avgLen)
 smoothDXF       = ta.wma(rawDXF, input_smooth)
 finalDXF        = input_stepSize > 0 ? math.round(smoothDXF / input_stepSize) * input_stepSize : smoothDXF
+
+//=== Normalize & Shift ===
+normalizedDXF   = (finalDXF + 100) / 2         // Chuyển [-100,100] → [0,100]
+shiftedDXF      = math.min(normalizedDXF - input_shift, 100)  // Nâng toàn bộ và giới hạn tối đa 100
 
 //=== Colors ===
 colBull         = color.new(#33ff00, 0)
@@ -179,6 +188,5 @@ fill(lnSigPlus, lnMaxPlus,  color=color.new(colBull, 80),       title="Bull Zone
 fill(lnSigMinus, lnMaxMinus, color=color.new(colBear, 80),      title="Bear Zone")
 
 //=== Plots ===
-plot(rawDXF, 'Raw DXF', color=color.new(color.silver, 0), linewidth=1)
-plot(finalDXF, 'Smoothed DXF', color=isBullish ? colBull : colBear, linewidth=3)
-
+plot(rawDXF, 'Raw DXF', color=color.new(color.silver, 70), linewidth=1)
+plot(shiftedDXF, 'DXF (Normalized & Shifted)', color=isBullish ? colBull : colBear, linewidth=3)
