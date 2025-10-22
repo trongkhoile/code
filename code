@@ -106,7 +106,7 @@ plot(show_senti ? V_senti : na, "Sentiment", style=plot.style_columns,
  color = s_up ? (sflag_up ? c_grow_above : c_fall_above) : 
  sflag_up ? c_grow_below : c_fall_below) 
 // =============================================================================
-scale_factor = 1.2
+scale_factor = 1.4
 adp := adp * scale_factor
 asp := asp * scale_factor
 s = plot(asp, 'Supply Energy', c_asp, 2, style=plot.style_circles,  join=true)
@@ -167,7 +167,7 @@ finalDXF        = input_stepSize > 0 ? math.round(smoothDXF / input_stepSize) * 
 
 //=== Normalize & Shift ===
 normalizedDXF   = (finalDXF + 100) / 2         // Chuyển [-100,100] → [0,100]
-shiftedDXF      = math.min(normalizedDXF - input_shift, 100)  // Nâng toàn bộ và giới hạn tối đa 100
+shiftedDXF      = math.min(normalizedDXF + input_shift, 100)  // Nâng toàn bộ và giới hạn tối đa 100
 
 //=== Colors ===
 colBull         = color.new(#33ff00, 0)
@@ -189,4 +189,6 @@ fill(lnSigMinus, lnMaxMinus, color=color.new(colBear, 80),      title="Bear Zone
 
 //=== Plots ===
 plot(rawDXF, 'Raw DXF', color=color.new(color.silver, 70), linewidth=1)
+plot(shiftedDXF, 'DXF (Normalized & Shifted)', color=isBullish ? colBull : colBear, linewidth=3)
+
 plot(shiftedDXF, 'DXF (Normalized & Shifted)', color=isBullish ? colBull : colBear, linewidth=3)
