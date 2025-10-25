@@ -1,0 +1,204 @@
+
+//@version=5
+strategy('2 RedK strategy', overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ***********************************************************************************************************
+// Choose MA type for the base DER calculation .. 
+// WMA is my preference and is default .. SMA is really slow and lags a lot - but added for comparison
+f_derma(_data, _len, MAOption) =>
+    value = 
+      MAOption == 'SMA' ? ta.sma(_data, _len) :
+      MAOption == 'EMA' ? ta.ema(_data, _len) :
+      ta.wma(_data, _len)
+// ***********************************************************************************************************
+
+
+// ===========================================================================================================
+//      Inputs
+// ===========================================================================================================
+
+price   = close
+length  = input.int(10, minval=1)
+DER_avg = input.int(5, 'Average', minval=1, inline='DER', group='Directional Energy Ratio')
+MA_Type = input.string('WMA', 'DER MA type', options=['WMA', 'EMA', 'SMA'], inline='DER', group='Directional Energy Ratio') 
+smooth  = input.int(3, 'Smooth', minval=1,  inline='DER_1', group='Directional Energy Ratio')
+
+show_senti = input.bool(false, 'Sentiment',  inline='DER_s', group='Directional Energy Ratio')
+senti   = input.int(20, 'Length', minval=1, inline='DER_s', group='Directional Energy Ratio')
+
+
+v_calc  = input.string('Relative', 'Calculation', options=['Relative', 'Full', 'None'], group='Volume Parameters')
+vlookbk = input.int(20, 'Lookback (for Relative)', minval=1,                            group='Volume Parameters')
+
+// ===========================================================================================================
+//          Calculations
+// ===========================================================================================================
+
+// Volume Calculation Option  -- will revert to no volume acceleration for instruments with no volume data
+// v4.0 => updated Relative Volume calculation fix per @m_b_round
+
+v = volume
+
+vola    = 
+  v_calc == 'None' or na(volume) ? 1 : 
+  v_calc == 'Relative' ?   ta.stoch(v, v, v, vlookbk) / 100 : 
+  v
+
+R       = (ta.highest(2) - ta.lowest(2)) / 2                    // R is the 2-bar average bar range - this method accomodates bar gaps
+sr      = ta.change(price) / R                                  // calc ratio of change to R
+rsr     = math.max(math.min(sr, 1), -1)                         // ensure ratio is restricted to +1/-1 in case of big moves
+c       = fixnan(rsr * vola)                                    // add volume accel -- fixnan adresses cases where no price change between bars
+
+c_plus  = math.max(c, 0)                                        // calc directional vol-accel energy
+c_minus = -math.min(c, 0)
+
+// plot(c_plus)
+// plot(c_minus)
+
+
+avg_vola    = f_derma(vola, length, MA_Type)
+dem         = f_derma(c_plus, length, MA_Type)  / avg_vola          // directional energy ratio
+sup         = f_derma(c_minus, length, MA_Type) / avg_vola
+
+adp         = 100 * ta.wma(dem, DER_avg)                            // average DER
+asp         = 100 * ta.wma(sup, DER_avg)
+anp         = adp - asp                                             // net DER..
+anp_s       = ta.wma(anp, smooth)
+
+// Calculate Sentiment - a VADER for a longer period and can act as a baseline (compared to a static 0 value)
+// note we're not re-calculating vol_avg, demand or supply energy for sentiment. this would've been a different approach
+s_adp       = 100 * ta.wma(dem, senti)                            // average DER for sentiment length
+s_asp       = 100 * ta.wma(sup, senti)
+V_senti     = ta.wma(s_adp - s_asp, smooth)
+
+
+// ===========================================================================================================
+//      Colors & plots
+// ===========================================================================================================
+c_adp   = color.new(color.aqua, 30)
+c_asp   = color.new(color.orange, 30)
+c_fd    = color.new(color.green, 80)
+c_fs    = color.new(color.red, 80)
+c_zero  = color.new(#ffee00, 70)
+
+c_up    = color.new(#359bfc, 0)
+c_dn    = color.new(#f57f17, 0)
+
+c_sup   = color.new(#33ff00, 80)
+c_sdn   = color.new(#ff1111, 80)
+up      = anp_s >= 0
+s_up    = V_senti >=0 
+
+hline(0, 'Zero Line', c_zero, hline.style_solid)
+
+// =============================================================================
+// v3.0 --- Sentiment will be represented as a 4-color histogram
+c_grow_above = #1b5e2080 
+c_grow_below = #dc4c4a80
+c_fall_above = #66bb6a80  
+c_fall_below = #ef8e9880     
+
+sflag_up = math.abs(V_senti) >= math.abs(V_senti[1])
+
+plot(show_senti ? V_senti : na, "Sentiment", style=plot.style_columns, 
+ color = s_up ? (sflag_up ? c_grow_above : c_fall_above) : 
+ sflag_up ? c_grow_below : c_fall_below) 
+// =============================================================================
+scale_factor = 1.4
+adp := adp * scale_factor
+asp := asp * scale_factor
+s = plot(asp, 'Supply Energy', c_asp, 2, style=plot.style_circles,  join=true)
+d = plot(adp, 'Demand Energy', c_adp, 2, style=plot.style_cross,    join=true)
+fill(d, s, adp > asp ? c_fd : c_fs)
+
+plot(anp, 'VADER', color.new(color.gray, 30), display=display.none)
+plot(anp_s, 'Signal', up ? c_up : c_dn, 4)
+
+// ===========================================================================================================
+//      v2.0 adding alerts 
+// ===========================================================================================================
+
+Alert_up    = ta.crossover(anp_s,0)
+Alert_dn    = ta.crossunder(anp_s,0)
+Alert_swing = ta.cross(anp_s,0)
+
+// "." in alert title for the alerts to show in the right order up/down/swing 
+alertcondition(Alert_up,    ".   VADER Crossing 0 Up",      "VADER Up - Buying Energy Detected!")
+alertcondition(Alert_dn,    "..  VADER Crossing 0 Down",    "VADER Down - Selling Energy Detected!")
+alertcondition(Alert_swing, "... VADER Crossing 0",         "VADER Swing - Possible Reversal")
+
+// ===========================================================================================================
+//      v3.0 more alerts for VADER crossing Sentiment
+// ===========================================================================================================
+
+v_speedup = ta.crossover(anp_s, V_senti)
+v_slowdn  = ta.crossunder(anp_s, V_senti)
+alertcondition(v_speedup,   "*  VADER Speeding Up",      "VADER Speeding Up!")
+alertcondition(v_slowdn,    "** VADER Slowing Down",    "VADER Slowing Down!")
+
+//=== Custom Function ===
+f_calcADXF(_src, _len, _volInput, _smoothing) =>
+    _momentumFlow       = ta.change(_src) * _volInput
+    _sumAbsMomentum     = math.sum(math.abs(_momentumFlow), _len)
+    _sumUpMomentum      = math.sum(math.max(_momentumFlow, 0), _len)
+    _dxfValue           = _sumUpMomentum / _sumAbsMomentum * 200 - 100
+    _dxfSmoothed        = ta.wma(_dxfValue, _smoothing)
+    _dxfSmoothed
+
+//=== Inputs ===
+input_price         = input(close, 'Source Price')
+input_dxfLen        = input.int(10, 'DXF Lookback', minval=1)
+input_avgLen        = input.int(5, 'Average Length', minval=1)
+input_smooth        = input.int(3, 'Smooth Factor', minval=1)
+input_stepSize      = input.int(20, 'Step Size [0 = No Step]', minval=0, step=5)
+input_sigLevel      = input(20, 'Significant Trend Level')
+input_volWeighted   = input.bool(false, 'Use Volume Weighting?')
+
+//=== Shift option ===
+input_shift         = input.int(5, "Shift DXF Value", minval=0, maxval=100)
+
+//=== Calculations ===
+volFactor       = input_volWeighted ? volume : 1
+rawDXF          = f_calcADXF(input_price, input_dxfLen, volFactor, input_avgLen)
+smoothDXF       = ta.wma(rawDXF, input_smooth)
+finalDXF        = input_stepSize > 0 ? math.round(smoothDXF / input_stepSize) * input_stepSize : smoothDXF
+
+//=== Normalize & Shift ===
+normalizedDXF   = (finalDXF + 100) / 2         // Chuyển [-100,100] → [0,100]
+shiftedDXF      = math.min(normalizedDXF + input_shift, 100)  // Nâng toàn bộ và giới hạn tối đa 100
+
+//=== Colors ===
+colBull         = color.new(#33ff00, 0)
+colBear         = color.new(#ff1111, 0)
+isBullish       = finalDXF >= 0
+colZeroLine     = color.new(color.yellow, 70)
+
+//=== Lines ===
+lnZero          = hline(0,            color=colZeroLine,              linestyle=hline.style_solid, editable=false)
+lnSigPlus       = hline(input_sigLevel,  color=color.green,           linestyle=hline.style_dotted, editable=false)
+lnSigMinus      = hline(-input_sigLevel, color=color.red,             linestyle=hline.style_dotted, editable=false)
+lnMaxPlus       = hline(100,          color=color.new(color.green,90), linestyle=hline.style_dotted, editable=false)
+lnMaxMinus      = hline(-100,         color=color.new(color.red,90),   linestyle=hline.style_dotted, editable=false)
+
+//=== Fills ===
+fill(lnSigPlus, lnSigMinus, color=color.new(color.orange, 70),  title="Neutral Zone")
+fill(lnSigPlus, lnMaxPlus,  color=color.new(colBull, 80),       title="Bull Zone")
+fill(lnSigMinus, lnMaxMinus, color=color.new(colBear, 80),      title="Bear Zone")
+
+//=== Plots ===
+plot(rawDXF, 'Raw DXF', color=color.new(color.silver, 70), linewidth=1)
+plot(shiftedDXF, 'DXF (Normalized & Shifted)', color=isBullish ? colBull : colBear, linewidth=3)
+
+plot(shiftedDXF, 'DXF (Normalized & Shifted)', color=isBullish ? colBull : colBear, linewidth=3)
+
+apBuy = ta.crossover(adp, asp) or ta.crossover(adp[1], asp[1]) or ta.crossover(adp[2], asp[2]) 
+apSell = ta.crossover(asp, adp) or ta.crossover(asp[1], adp[1]) or ta.crossover(asp[2], adp[2])
+buySignal  = ta.crossover(adp, asp)   // xanh cắt lên cam
+sellSignal = ta.crossover(asp, adp)   // cam cắt lên xanh
+
+// Vẽ label lên biểu đồ
+if apBuy and ta.crossover(shiftedDXF, asp)
+    strategy.entry("Long", strategy.long)
+
+if apSell and ta.crossover(asp, shiftedDXF)
+    strategy.entry("Short", strategy.short)
