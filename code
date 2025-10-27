@@ -198,24 +198,23 @@ apSell = ta.crossover(asp, adp) or ta.crossover(asp[1], adp[1]) or ta.crossover(
 buySignal  = ta.crossover(adp, asp)   // xanh cắt lên cam
 sellSignal = ta.crossover(asp, adp)   // cam cắt lên xanh
 
-// --- Vẽ label lên biểu đồ và vào lệnh
 if apBuy and ta.crossover(shiftedDXF, asp) and barstate.isconfirmed and check == 0
     strategy.entry("Long", strategy.long)
-    alert('{"SYMBOL":"{{ticker}}","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
     check := 1
 
 if apSell and ta.crossover(asp, shiftedDXF) and barstate.isconfirmed and check == 0
     strategy.entry("Short", strategy.short)
-    alert('{"SYMBOL":"{{ticker}}","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
     check := 2
 
-// --- Alert và đóng lệnh + vẽ label
+// --- Alert và đóng lệnh
 if check == 1 and ta.crossover(asp, shiftedDXF)
-    alert('{"SYMBOL":"{{ticker}}","ACTION":"BUY","CHECK":"YES"}', alert.freq_once_per_bar_close)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"YES"}', alert.freq_once_per_bar_close)
     strategy.close_all()
     check := 0
 
 if check == 2 and ta.crossover(adp, shiftedDXF)
-    alert('{"SYMBOL":"{{ticker}}","ACTION":"SELL","CHECK":"YES"}', alert.freq_once_per_bar_close)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"YES"}', alert.freq_once_per_bar_close)
     strategy.close_all()
     check := 0
