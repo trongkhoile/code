@@ -1,0 +1,151 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RedKTrader
+
+//@version=5
+strategy('2 RedK strategy', overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ***********************************************************************************************************
+// Choose MA type for the base DER calculation .. 
+// WMA is my preference and is default .. SMA is really slow and lags a lot - but added for comparison
+// ===== Function =====
+f_derma(_data, _len, MAOption) =>
+    MAOption == 'SMA' ? ta.sma(_data, _len) :
+     MAOption == 'EMA' ? ta.ema(_data, _len) :
+      ta.wma(_data, _len)
+
+// ===== Inputs =====
+price   = close
+length  = input.int(10, minval=1)
+DER_avg = input.int(5, 'Average', minval=1)
+MA_Type = input.string('WMA', 'DER MA type', options=['WMA', 'EMA', 'SMA'])
+smooth  = input.int(3, 'Smooth', minval=1)
+
+v_calc  = input.string('Relative', 'Volume Mode', options=['Relative', 'Full', 'None'])
+vlookbk = input.int(20, 'Volume Lookback', minval=1)
+
+// ===== Volume Compute =====
+v = volume
+vola = (v_calc == 'None' or na(v)) ? 1 :
+       (v_calc == 'Relative' ? ta.stoch(v, v, v, vlookbk) / 100 : v)
+
+R   = (ta.highest(2) - ta.lowest(2)) / 2
+sr  = ta.change(price) / R
+rsr = math.max(math.min(sr, 1), -1)
+c   = fixnan(rsr * vola)
+
+c_plus  = math.max(c, 0)
+c_minus = -math.min(c, 0)
+
+avg_vola = f_derma(vola, length, MA_Type)
+dem      = f_derma(c_plus, length, MA_Type)  / avg_vola
+sup      = f_derma(c_minus, length, MA_Type) / avg_vola
+
+adp = 100 * ta.wma(dem, DER_avg)
+asp = 100 * ta.wma(sup, DER_avg)
+
+// Scale
+scale_factor = 1.4
+adp := adp * scale_factor
+asp := asp * scale_factor
+
+// ===== DXF =====
+f_calcADXF(_src, _len, _volInput, _smoothing) =>
+    _momentumFlow   = ta.change(_src) * _volInput
+    _sumAbs         = math.sum(math.abs(_momentumFlow), _len)
+    _sumUp          = math.sum(math.max(_momentumFlow, 0), _len)
+    _dxf            = _sumUp / _sumAbs * 200 - 100
+    ta.wma(_dxf, _smoothing)
+
+input_price         = input.source(close, 'Source Price')
+input_dxfLen        = input.int(10)
+input_avgLen        = input.int(5)
+input_smooth        = input.int(3)
+input_stepSize      = input.int(20)
+input_shift         = input.int(5)
+input_volWeighted   = input.bool(false)
+
+volFactor   = input_volWeighted ? volume : 1
+rawDXF      = f_calcADXF(input_price, input_dxfLen, volFactor, input_avgLen)
+smoothDXF   = ta.wma(rawDXF, input_smooth)
+finalDXF    = input_stepSize > 0 ? math.round(smoothDXF / input_stepSize) * input_stepSize : smoothDXF
+normalized  = (finalDXF + 100) / 2
+shiftedDXF  = math.min(normalized + input_shift, 100)
+
+// ===== OUTPUT (Không hiển thị, chỉ trả biến) =====
+var float ADP   = na
+var float ASP   = na
+var float DXF   = na
+
+ADP := adp
+ASP := asp
+DXF := shiftedDXF
+
+// để dùng tiếp trong indicator khác: ADP, ASP, DXF
+input_sensitivity   = input.float(1.0, title="Sensitivity", step=0.1)
+input_atrLength     = input.int(10, title="ATR Length")
+input_useHeikinAshi = input.bool(false, title="Use Heikin Ashi Candle?")
+
+// === Price Source
+heikinAshiSymbol     = ticker.heikinashi(syminfo.tickerid)
+price_source         = input_useHeikinAshi ? request.security(heikinAshiSymbol, timeframe.period, close) : close
+
+// === ATR Calculation
+calc_atr             = ta.atr(input_atrLength)
+calc_trailingOffset  = input_sensitivity * calc_atr
+
+// === Trailing Line Calculation
+var float line_trailing = na
+line_trailing := price_source > nz(line_trailing[1]) and price_source[1] > nz(line_trailing[1]) ? math.max(nz(line_trailing[1]), price_source - calc_trailingOffset) :
+                 price_source < nz(line_trailing[1]) and price_source[1] < nz(line_trailing[1]) ? math.min(nz(line_trailing[1]), price_source + calc_trailingOffset) :
+                 price_source > nz(line_trailing[1]) ? price_source - calc_trailingOffset : price_source + calc_trailingOffset
+
+// === Signals
+signal_buy  = ta.crossover(price_source, line_trailing)
+signal_sell = ta.crossunder(price_source, line_trailing)
+
+// === Plot Trailing Line
+plot(line_trailing, title="Trailing Stop Line", color=color.new(color.green, 0), linewidth=2)
+
+// === Alerts
+alertcondition(signal_buy,  title="BUY Alert",  message="AI Agent BUY Signal Triggered")
+alertcondition(signal_sell, title="SELL Alert", message="AI Agent SELL Signal Triggered")
+
+// === RSI Dynamic Bands Inputs
+input_rsiOverbought = input(70, title="RSI Overbought Level")
+input_rsiOversold   = input(30, title="RSI Oversold Level")
+input_rsiLength     = input(14, title="RSI Length")
+
+// === RSI Calculation
+price_close       = close
+calc_emaPeriod    = 2 * input_rsiLength - 1
+
+calc_rsiUp        = ta.ema(math.max(price_close - price_close[1], 0), calc_emaPeriod)
+calc_rsiDown      = ta.ema(math.max(price_close[1] - price_close, 0), calc_emaPeriod)
+
+// === Upper / Lower Bands
+calc_upperOffset  = (input_rsiLength - 1) * ( calc_rsiDown * input_rsiOverbought / (100 - input_rsiOverbought) - calc_rsiUp )
+line_upperBand    = calc_upperOffset >= 0 ? price_close + calc_upperOffset : price_close + calc_upperOffset * (100 - input_rsiOverbought) / input_rsiOverbought
+
+calc_lowerOffset  = (input_rsiLength - 1) * ( calc_rsiDown * input_rsiOversold / (100 - input_rsiOversold) - calc_rsiUp )
+line_lowerBand    = calc_lowerOffset >= 0 ? price_close + calc_lowerOffset : price_close + calc_lowerOffset * (100 - input_rsiOversold) / input_rsiOversold
+
+// === Middle Band Plot
+plot((line_upperBand + line_lowerBand) / 2, title="RSI Midline", color=color.new(color.yellow, 0), linewidth=1)
+apBuy = ta.crossover(adp, asp)
+apSell = ta.crossover(asp, adp) 
+buySignal  = ta.crossover(adp, asp)   // xanh cắt lên cam
+sellSignal = ta.crossover(asp, adp)   // cam cắt lên xanh
+if ta.crossover(adp, asp) and asp < shiftedDXF and (line_trailing > (line_upperBand + line_lowerBand) / 2) and barstate.isconfirmed
+    strategy.close("Short")
+    strategy.entry("Long", strategy.long)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
+if ta.crossover(asp,shiftedDXF) or ta.crossunder(adp,shiftedDXF)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"YES"}', alert.freq_once_per_bar_close)
+    strategy.close("Long")
+if ta.crossover(asp, adp) and (line_trailing < (line_upperBand + line_lowerBand) / 2) and barstate.isconfirmed
+    strategy.close("Long")
+    strategy.entry("Short", strategy.short)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
+if ta.crossover(adp,shiftedDXF) or ta.crossunder(asp,shiftedDXF)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"YES"}', alert.freq_once_per_bar_close)
+    strategy.close("Short")
