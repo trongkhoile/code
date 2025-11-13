@@ -1,0 +1,349 @@
+
+//@version=5
+strategy('2 RedK strategy', overlay=false, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ***********************************************************************************************************
+// Choose MA type for the base DER calculation .. 
+// WMA is my preference and is default .. SMA is really slow and lags a lot - but added for comparison
+f_derma(_data, _len, MAOption) =>
+    value = 
+      MAOption == 'SMA' ? ta.sma(_data, _len) :
+      MAOption == 'EMA' ? ta.ema(_data, _len) :
+      ta.wma(_data, _len)
+// ***********************************************************************************************************
+
+
+// ===========================================================================================================
+//      Inputs
+// ===========================================================================================================
+
+price   = close
+length  = input.int(10, minval=1)
+DER_avg = input.int(5, 'Average', minval=1, inline='DER', group='Directional Energy Ratio')
+MA_Type = input.string('WMA', 'DER MA type', options=['WMA', 'EMA', 'SMA'], inline='DER', group='Directional Energy Ratio') 
+smooth  = input.int(3, 'Smooth', minval=1,  inline='DER_1', group='Directional Energy Ratio')
+
+show_senti = input.bool(false, 'Sentiment',  inline='DER_s', group='Directional Energy Ratio')
+senti   = input.int(20, 'Length', minval=1, inline='DER_s', group='Directional Energy Ratio')
+
+
+v_calc  = input.string('Relative', 'Calculation', options=['Relative', 'Full', 'None'], group='Volume Parameters')
+vlookbk = input.int(20, 'Lookback (for Relative)', minval=1,                            group='Volume Parameters')
+
+// ===========================================================================================================
+//          Calculations
+// ===========================================================================================================
+
+// Volume Calculation Option  -- will revert to no volume acceleration for instruments with no volume data
+// v4.0 => updated Relative Volume calculation fix per @m_b_round
+
+v = volume
+
+vola    = 
+  v_calc == 'None' or na(volume) ? 1 : 
+  v_calc == 'Relative' ?   ta.stoch(v, v, v, vlookbk) / 100 : 
+  v
+
+R       = (ta.highest(2) - ta.lowest(2)) / 2                    // R is the 2-bar average bar range - this method accomodates bar gaps
+sr      = ta.change(price) / R                                  // calc ratio of change to R
+rsr     = math.max(math.min(sr, 1), -1)                         // ensure ratio is restricted to +1/-1 in case of big moves
+c       = fixnan(rsr * vola)                                    // add volume accel -- fixnan adresses cases where no price change between bars
+
+c_plus  = math.max(c, 0)                                        // calc directional vol-accel energy
+c_minus = -math.min(c, 0)
+
+// plot(c_plus)
+// plot(c_minus)
+
+
+avg_vola    = f_derma(vola, length, MA_Type)
+dem         = f_derma(c_plus, length, MA_Type)  / avg_vola          // directional energy ratio
+sup         = f_derma(c_minus, length, MA_Type) / avg_vola
+
+adp         = 100 * ta.wma(dem, DER_avg)                            // average DER
+asp         = 100 * ta.wma(sup, DER_avg)
+anp         = adp - asp                                             // net DER..
+anp_s       = ta.wma(anp, smooth)
+
+// Calculate Sentiment - a VADER for a longer period and can act as a baseline (compared to a static 0 value)
+// note we're not re-calculating vol_avg, demand or supply energy for sentiment. this would've been a different approach
+s_adp       = 100 * ta.wma(dem, senti)                            // average DER for sentiment length
+s_asp       = 100 * ta.wma(sup, senti)
+V_senti     = ta.wma(s_adp - s_asp, smooth)
+
+
+// ===========================================================================================================
+//      Colors & plots
+// ===========================================================================================================
+c_adp   = color.new(color.aqua, 30)
+c_asp   = color.new(color.orange, 30)
+c_fd    = color.new(color.green, 80)
+c_fs    = color.new(color.red, 80)
+c_zero  = color.new(#ffee00, 70)
+
+c_up    = color.new(#359bfc, 0)
+c_dn    = color.new(#f57f17, 0)
+
+c_sup   = color.new(#33ff00, 80)
+c_sdn   = color.new(#ff1111, 80)
+up      = anp_s >= 0
+s_up    = V_senti >=0 
+
+hline(0, 'Zero Line', c_zero, hline.style_solid)
+
+// =============================================================================
+// v3.0 --- Sentiment will be represented as a 4-color histogram
+c_grow_above = #1b5e2080 
+c_grow_below = #dc4c4a80
+c_fall_above = #66bb6a80  
+c_fall_below = #ef8e9880     
+
+sflag_up = math.abs(V_senti) >= math.abs(V_senti[1])
+
+plot(show_senti ? V_senti : na, "Sentiment", style=plot.style_columns, 
+ color = s_up ? (sflag_up ? c_grow_above : c_fall_above) : 
+ sflag_up ? c_grow_below : c_fall_below) 
+// =============================================================================
+scale_factor = 1.4
+adp := adp * scale_factor
+asp := asp * scale_factor
+s = plot(asp, 'Supply Energy', c_asp, 2, style=plot.style_circles,  join=true)
+d = plot(adp, 'Demand Energy', c_adp, 2, style=plot.style_cross,    join=true)
+fill(d, s, adp > asp ? c_fd : c_fs)
+
+plot(anp, 'VADER', color.new(color.gray, 30), display=display.none)
+plot(anp_s, 'Signal', up ? c_up : c_dn, 4)
+
+// ===========================================================================================================
+//      v2.0 adding alerts 
+// ===========================================================================================================
+
+Alert_up    = ta.crossover(anp_s,0)
+Alert_dn    = ta.crossunder(anp_s,0)
+Alert_swing = ta.cross(anp_s,0)
+
+// "." in alert title for the alerts to show in the right order up/down/swing 
+alertcondition(Alert_up,    ".   VADER Crossing 0 Up",      "VADER Up - Buying Energy Detected!")
+alertcondition(Alert_dn,    "..  VADER Crossing 0 Down",    "VADER Down - Selling Energy Detected!")
+alertcondition(Alert_swing, "... VADER Crossing 0",         "VADER Swing - Possible Reversal")
+
+// ===========================================================================================================
+//      v3.0 more alerts for VADER crossing Sentiment
+// ===========================================================================================================
+
+v_speedup = ta.crossover(anp_s, V_senti)
+v_slowdn  = ta.crossunder(anp_s, V_senti)
+alertcondition(v_speedup,   "*  VADER Speeding Up",      "VADER Speeding Up!")
+alertcondition(v_slowdn,    "** VADER Slowing Down",    "VADER Slowing Down!")
+
+//=== Custom Function ===
+f_calcADXF(_src, _len, _volInput, _smoothing) =>
+    _momentumFlow       = ta.change(_src) * _volInput
+    _sumAbsMomentum     = math.sum(math.abs(_momentumFlow), _len)
+    _sumUpMomentum      = math.sum(math.max(_momentumFlow, 0), _len)
+    _dxfValue           = _sumUpMomentum / _sumAbsMomentum * 200 - 100
+    _dxfSmoothed        = ta.wma(_dxfValue, _smoothing)
+    _dxfSmoothed
+
+//=== Inputs ===
+input_price         = input(close, 'Source Price')
+input_dxfLen        = input.int(10, 'DXF Lookback', minval=1)
+input_avgLen        = input.int(5, 'Average Length', minval=1)
+input_smooth        = input.int(3, 'Smooth Factor', minval=1)
+input_stepSize      = input.int(20, 'Step Size [0 = No Step]', minval=0, step=5)
+input_sigLevel      = input(20, 'Significant Trend Level')
+input_volWeighted   = input.bool(false, 'Use Volume Weighting?')
+
+//=== Shift option ===
+input_shift         = input.int(5, "Shift DXF Value", minval=0, maxval=100)
+
+//=== Calculations ===
+volFactor       = input_volWeighted ? volume : 1
+rawDXF          = f_calcADXF(input_price, input_dxfLen, volFactor, input_avgLen)
+smoothDXF       = ta.wma(rawDXF, input_smooth)
+finalDXF        = input_stepSize > 0 ? math.round(smoothDXF / input_stepSize) * input_stepSize : smoothDXF
+
+//=== Normalize & Shift ===
+normalizedDXF   = (finalDXF + 100) / 2         // Chuyển [-100,100] → [0,100]
+shiftedDXF      = math.min(normalizedDXF + input_shift, 100)  // Nâng toàn bộ và giới hạn tối đa 100
+
+//=== Colors ===
+colBull         = color.new(#33ff00, 0)
+colBear         = color.new(#ff1111, 0)
+isBullish       = finalDXF >= 0
+colZeroLine     = color.new(color.yellow, 70)
+
+//=== Lines ===
+lnZero          = hline(0,            color=colZeroLine,              linestyle=hline.style_solid, editable=false)
+lnSigPlus       = hline(input_sigLevel,  color=color.green,           linestyle=hline.style_dotted, editable=false)
+lnSigMinus      = hline(-input_sigLevel, color=color.red,             linestyle=hline.style_dotted, editable=false)
+lnMaxPlus       = hline(100,          color=color.new(color.green,90), linestyle=hline.style_dotted, editable=false)
+lnMaxMinus      = hline(-100,         color=color.new(color.red,90),   linestyle=hline.style_dotted, editable=false)
+
+//=== Fills ===
+fill(lnSigPlus, lnSigMinus, color=color.new(color.orange, 70),  title="Neutral Zone")
+fill(lnSigPlus, lnMaxPlus,  color=color.new(colBull, 80),       title="Bull Zone")
+fill(lnSigMinus, lnMaxMinus, color=color.new(colBear, 80),      title="Bear Zone")
+
+//=== Plots ===
+//-----------------------------------------------------------------------------}
+//Settings
+//-----------------------------------------------------------------------------{
+hbf_length = input.int(14, "Length")
+hbf_mult = input.float(2.0, "Levels Multiplier")
+hbf_src = input.source(close, "Source")
+
+//Style
+hbf_bull_css_0 = input.color(color.new(#0cb51a, 50), "Bullish Gradient", inline="inline0", group="Style")
+hbf_bull_css_1 = input.color(#0cb51a, "", inline="inline0", group="Style")
+hbf_bear_css_0 = input.color(color.new(#ff1100, 50), "Bearish Gradient", inline="inline1", group="Style")
+hbf_bear_css_1 = input.color(#ff1100, "", inline="inline1", group="Style")
+
+//-----------------------------------------------------------------------------}
+//Normalization variables
+//-----------------------------------------------------------------------------{
+var int hbf_short_len = int(hbf_length / 2)
+var int hbf_hull_len  = int(math.sqrt(hbf_length))
+
+var float hbf_den1 = hbf_short_len * (hbf_short_len + 1) / 2
+var float hbf_den2 = hbf_length * (hbf_length + 1) / 2
+var float hbf_den3 = hbf_hull_len * (hbf_hull_len + 1) / 2
+
+//-----------------------------------------------------------------------------}
+//Hull coefficients
+//-----------------------------------------------------------------------------{
+var hbf_lcwa_coeffs = array.new_float(hbf_hull_len, 0)
+var hbf_hull_coeffs = array.new_float(0)
+
+if barstate.isfirst
+    //Linearly combined WMA coeffs
+    for i = 0 to hbf_length - 1
+        hbf_sum1 = math.max(hbf_short_len - i, 0)
+        hbf_sum2 = hbf_length - i
+        array.unshift(hbf_lcwa_coeffs, 2 * (hbf_sum1 / hbf_den1) - (hbf_sum2 / hbf_den2))
+
+    //Zero padding
+    for i = 0 to hbf_hull_len - 2
+        array.unshift(hbf_lcwa_coeffs, 0)
+
+    //WMA convolution
+    for i = hbf_hull_len to array.size(hbf_lcwa_coeffs) - 1
+        hbf_sum3 = 0.0
+        for j = i - hbf_hull_len to i - 1
+            hbf_sum3 += array.get(hbf_lcwa_coeffs, j) * (i - j)
+        array.unshift(hbf_hull_coeffs, hbf_sum3 / hbf_den3)
+
+//-----------------------------------------------------------------------------}
+//Hull squeeze oscillator
+//-----------------------------------------------------------------------------{
+var float hbf_osc_state = 0
+hbf_len = array.size(hbf_hull_coeffs) - 1
+hbf_hma = 0.0
+hbf_inv_hma = 0.0
+
+for i = 0 to hbf_len
+    hbf_hma += hbf_src[i] * array.get(hbf_hull_coeffs, i)
+    hbf_inv_hma += hbf_src[hbf_len - i] * array.get(hbf_hull_coeffs, i)
+
+hbf_hso = (hbf_hma - hbf_inv_hma)*6.7
+
+hbf_cmean = ta.cum(math.abs(hbf_hso)) / bar_index * hbf_mult
+
+hbf_osc_state := ta.cross(hbf_hso, hbf_cmean) or ta.cross(hbf_hso, -hbf_cmean) ? 0 :
+     hbf_hso < hbf_hso[1] and hbf_hso > hbf_cmean ? -1 :
+     hbf_hso > hbf_hso[1] and hbf_hso < -hbf_cmean ? 1 :
+     hbf_osc_state
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------{
+hbf_css0 = color.from_gradient(hbf_hso, 0, hbf_cmean, hbf_bull_css_0, hbf_bull_css_1)
+hbf_css1 = color.from_gradient(hbf_hso, -hbf_cmean, 0, hbf_bear_css_1, hbf_bear_css_0)
+hbf_css = hbf_hso > 0 ? hbf_css0 : hbf_css1
+
+//Histogram
+plot(hbf_hso, "Hull Butterfly", color=hbf_css, style=plot.style_histogram)
+plot(hbf_hso, "", color=chart.fg_color)
+
+//Dots
+plot(hbf_osc_state > hbf_osc_state[1] and hbf_osc_state == 1 ? hbf_hso : na, "Bullish Dot", color=hbf_bull_css_1, linewidth=2, style=plot.style_circles)
+plot(hbf_osc_state < hbf_osc_state[1] and hbf_osc_state == -1 ? hbf_hso : na, "Bearish Dot", color=hbf_bear_css_1, linewidth=2, style=plot.style_circles)
+
+//Levels
+plot(hbf_cmean, color=color.gray, editable=false)
+plot(hbf_cmean / 2, color=color.gray, editable=false)
+plot(-hbf_cmean / 2, color=color.gray, editable=false)
+plot(-hbf_cmean, color=color.gray, editable=false)
+
+// Inputs
+len = input.int(14, "Length")
+th = input.int(20, "Threshold")
+
+// True Range calculation
+TrueRange = math.max(math.max(high - low, math.abs(high - nz(close[1]))),math.abs(low - nz(close[1])))
+
+// Directional Movement calculations
+DirectionalMovementPlus = high - nz(high[1]) > nz(low[1]) - low ? math.max(high - nz(high[1]), 0) : 0
+DirectionalMovementMinus = nz(low[1]) - low > high - nz(high[1]) ? math.max(nz(low[1]) - low, 0) : 0
+
+// Smoothed values
+var float SmoothedTrueRange = 0.0
+SmoothedTrueRange := nz(SmoothedTrueRange[1]) - (nz(SmoothedTrueRange[1]) / len) + TrueRange
+
+var float SmoothedDirectionalMovementPlus = 0.0
+SmoothedDirectionalMovementPlus := nz(SmoothedDirectionalMovementPlus[1]) - (nz(SmoothedDirectionalMovementPlus[1]) / len) + DirectionalMovementPlus
+
+var float SmoothedDirectionalMovementMinus = 0.0
+SmoothedDirectionalMovementMinus := nz(SmoothedDirectionalMovementMinus[1]) - (nz(SmoothedDirectionalMovementMinus[1]) / len) + DirectionalMovementMinus
+
+// DI and ADX calculations
+DIPlus = SmoothedDirectionalMovementPlus / SmoothedTrueRange * 100
+DIMinus = SmoothedDirectionalMovementMinus / SmoothedTrueRange * 100 * 1.7 - 60
+DX = math.abs(DIPlus - DIMinus) / (DIPlus + DIMinus) * 100
+ADX = ta.sma(DX, len)
+
+// Plot
+plot(DIMinus, color=color.new(color.red, 0), title="DI-")
+
+
+var int check = 0
+isBullish1 = finalDXF >= 0
+apSell = ta.crossover(asp,shiftedDXF) and (ta.crossover(asp,adp) or ta.crossover(asp[1],adp[1]) or ta.crossover(asp[2],adp[2]) or ta.crossover(asp[3],adp[3]) or ta.crossover(asp[4],adp[4]))
+apSell1 = ta.crossover(asp,adp) and (ta.crossover(asp,shiftedDXF) or ta.crossover(asp[1],shiftedDXF[1]) or ta.crossover(asp[2],shiftedDXF[2]) or ta.crossover(asp[3],shiftedDXF[3]) or ta.crossover(asp[4],shiftedDXF[4]))
+apSell2 = asp > shiftedDXF and finalDXF < 0 and ta.crossunder(adp,shiftedDXF)
+apSellclose = ta.crossover(adp,shiftedDXF) or ta.crossunder(asp,shiftedDXF) or ((finalDXF >= 0) and (finalDXF[1] < 0))
+apBuy = ta.crossunder(asp,shiftedDXF) and (ta.crossunder(asp,adp) or ta.crossunder(asp[1],adp[1]) or ta.crossunder(asp[2],adp[2]) or ta.crossunder(asp[3],adp[3]) or ta.crossunder(asp[4],adp[4]))
+apBuy1 = ta.crossunder(asp,adp) and (ta.crossunder(asp,shiftedDXF) or ta.crossunder(asp[1],shiftedDXF[1]) or ta.crossunder(asp[2],shiftedDXF[2]) or ta.crossunder(asp[3],shiftedDXF[3]) or ta.crossunder(asp[4],shiftedDXF[4]))
+apBuy2 = asp < shiftedDXF and finalDXF >= 0 and (ta.crossover(adp,asp) or ta.crossover(adp,shiftedDXF))
+apBuyclose = ta.crossunder(adp,shiftedDXF) or (adp < shiftedDXF and ta.crossunder(adp,asp)) or ((finalDXF < 0) and (finalDXF[1] >= 0))
+
+if (apSell or apSell1 or apSell2) and hbf_hso < DIMinus and check == 0 and barstate.isconfirmed
+    strategy.close("Long")
+    strategy.entry("Short", strategy.short)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
+    check := 1 
+if check == 1 and apSellclose and barstate.isconfirmed
+    if apBuy or apBuy1 or apBuy2
+        strategy.close("Short")
+        strategy.entry("Long", strategy.long)
+        alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
+        check := 4
+    else 
+        strategy.close("Short")
+        alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"YES"}', alert.freq_once_per_bar_close)
+        check := 0
+if (apBuy or apBuy1 or apBuy2) and check == 0 and barstate.isconfirmed
+    strategy.close("Short")
+    strategy.entry("Long", strategy.long)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
+    check := 4
+if check == 4 and apBuyclose and barstate.isconfirmed
+    if (apSell or apSell1 or apSell2) and hbf_hso < DIMinus
+        strategy.close("Long")
+        strategy.entry("Short", strategy.short)
+        alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
+        check := 1
+    else
+        strategy.close("Long")
+        alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"YES"}', alert.freq_once_per_bar_close)
+        check := 0
