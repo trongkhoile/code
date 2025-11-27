@@ -1,0 +1,107 @@
+//@version=5
+indicator("nadara indicator", overlay=true, max_lines_count = 500, max_labels_count = 500, max_bars_back=500)
+
+//---------------------------------------
+// INPUTS
+//---------------------------------------
+length1 = input.int(title="1st Length", minval=1, defval=120)
+length2 = input.int(title="2nd Length", minval=1, defval=12)
+maInput = input.string(title="MA Type", defval="EMA", options=["EMA", "SMA", "VWMA", "WMA"])
+src = input.source(title="Source", defval=hl2)
+
+//---------------------------------------
+// MA + NMA
+//---------------------------------------
+getMA(_src, _length) =>
+    if maInput == "EMA"
+        ta.ema(_src, _length)
+    else if maInput == "SMA"
+        ta.sma(_src, _length)
+    else if maInput == "VWMA"
+        ta.vwma(_src, _length)
+    else
+        ta.wma(_src, _length)
+
+getNMA(_src, _length1, _length2) =>
+    lam = _length1 / _length2
+    alpha = lam * (_length1 - 1) / (_length1 - lam)
+    ma1 = getMA(_src, _length1)
+    ma2 = getMA(ma1, _length2)
+    (1 + alpha) * ma1 - alpha * ma2
+
+nma = getNMA(src, length1, length2)
+plot(nma, title="NMA Black Line", linewidth=2, style=plot.style_stepline, color=color.green)
+
+//---------------------------------------
+// VWAP
+//---------------------------------------
+lenvwap = input.int(1, minval=1, title="VWAP Length")
+src1a = input.source(close, title="VWAP Source")
+vvwap = ta.vwap(hlc3)
+
+//---------------------------------------
+// BOLLINGER BANDS
+//---------------------------------------
+emaSource = close
+emaPeriod = 20
+devMultiple = 2.0
+baseline = ta.sma(emaSource, emaPeriod)
+
+plot(baseline, title="BB Red Line", color=color.red)
+
+stdDeviation = devMultiple * ta.stdev(emaSource, emaPeriod)
+upperBand = baseline + stdDeviation
+lowerBand = baseline - stdDeviation
+
+
+//---------------------------------------
+// HULL + KAHLMAN
+//---------------------------------------
+srchull    = input.source(hl2, "Price Data")
+lengthhull = input.int(24, "Lookback")
+showcross  = input.bool(true, "Show cross over/under")
+gain       = input.int(10000, "Gain")
+useKahlman = input.bool(true, "Use Kahlman")
+
+// HMA FIXED VERSION (length MUST be int)
+hma(_src, _len) =>
+    len1 = math.round(_len / 2)
+    len2 = _len
+    len3 = math.round(math.sqrt(_len))
+    ta.wma(2 * ta.wma(_src, len1) - ta.wma(_src, len2), len3)
+
+hma3(_src, _len) =>
+    p = math.round(_len / 2)
+    ta.wma(ta.wma(close, math.round(p / 3)) * 3- ta.wma(close, math.round(p / 2))- ta.wma(close, p),p)
+
+kahlman(x, g) =>
+    var float kf = 0.0
+    dk = x - nz(kf[1], x)
+    smooth = nz(kf[1], x) + dk * math.sqrt((g / 10000) * 2)
+    var float velo = 0.0
+    velo := nz(velo[1], 0) + ((g / 10000) * dk)
+    kf := smooth + velo
+
+a = useKahlman ? kahlman(hma(srchull, lengthhull), gain) : hma(srchull, lengthhull)
+b = useKahlman ? kahlman(hma3(srchull, lengthhull), gain) : hma3(srchull, lengthhull)
+
+c = b > a ? color.lime : color.red
+crossdn = a > b and a[1] < b[1]
+crossup = b > a and b[1] < a[1]
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+
+if showcross and crossdn and barstate.isconfirmed
+    label.new(bar_index, high, text = "SELL",style = label.style_label_down,color = color.red,textcolor = color.white,size = size.small)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"SELL","CHECK":"NO"}', alert.freq_once_per_bar_close)
+if showcross and crossup and barstate.isconfirmed
+    label.new(bar_index, low, text = "BUY",style = label.style_label_up,color = color.green,textcolor = color.white,size = size.small)
+    alert('{"SYMBOL":"' + syminfo.ticker + '","ACTION":"BUY","CHECK":"NO"}', alert.freq_once_per_bar_close)
+// Plot Buy/Sell shapes
+//---------------------------------------
+// ALERTS
+//---------------------------------------
+alertcondition(crossup, title="Buy", message="Go Long")
+alertcondition(crossdn, title="Sell", message="Go Short")
